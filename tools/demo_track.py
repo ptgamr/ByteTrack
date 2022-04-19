@@ -163,6 +163,8 @@ class Predictor(object):
         if self.fp16:
             img = img.half()  # to FP16
 
+        return None, img_info
+
         with torch.no_grad():
             timer.tic()
             outputs = self.model(img)
@@ -174,7 +176,6 @@ class Predictor(object):
             #logger.info("Infer time: {:.4f}s".format(time.time() - t0))
         return outputs, img_info
 
-
 def image_demo(predictor, vis_folder, current_time, args):
     if osp.isdir(args.path):
         files = get_image_list(args.path)
@@ -185,10 +186,57 @@ def image_demo(predictor, vis_folder, current_time, args):
     timer = Timer()
     results = []
 
+    print(args.path)
+
+    gt_file = args.path + '/../det/det.txt'
+
+    with open(gt_file, 'r') as f:
+        lines = f.readlines()
+
+    seq_name = args.path.split('/')[-2]
+    # import ipdb; ipdb.set_trace()
+
     for frame_id, img_path in enumerate(files, 1):
         outputs, img_info = predictor.inference(img_path, timer)
-        if outputs[0] is not None:
-            online_targets = tracker.update(outputs[0], [img_info['height'], img_info['width']], exp.test_size)
+
+        gt_frame_lines = [item for item in lines if int(item.split(',')[0]) == frame_id]
+
+        # ipdb> type(outputs[0])
+        # <class 'torch.Tensor'>
+        # ipdb> outputs[0].shape
+        # torch.Size([115, 7])
+        # ipdb> outputs[0][0]
+        # tensor([429.5000, 261.0000, 572.0000, 584.5000,   0.9990,   0.9541,   0.0000],
+        #     device='cuda:0')
+
+        gt_detections = [
+            list(map(float,line.split(',')[2:6])) + [1.0, 1.0, 0.0] for line in gt_frame_lines]
+
+        gt_detections_tensor = torch.tensor(gt_detections, device = predictor.device, dtype = torch.float32)
+
+        # import ipdb; ipdb.set_trace()
+
+        # the gt format was x_bbox, y_bbox, w_bbox, h_bbox, converting to (x1, y1, x2, y2
+
+        if len(gt_detections_tensor.shape) > 1:
+            gt_detections_tensor[:, 2] = gt_detections_tensor[:, 0] + gt_detections_tensor[:, 2]
+            gt_detections_tensor[:, 3] = gt_detections_tensor[:, 1] + gt_detections_tensor[:, 3]
+        else:
+            # import ipdb; ipdb.set_trace()
+            print(gt_detections_tensor)
+        # Detections ordered as (x1, y1, x2, y2, obj_conf, class_conf, class_pred)
+        # tensor([429.5000, 261.0000, 572.0000, 584.5000,   0.9990,   0.9541,   0.0000]
+
+        #  exp.test_size (800, 1440) for MOT
+        # import ipdb; ipdb.set_trace()
+
+
+        # if outputs[0] is not None:
+        #     online_targets = tracker.update(outputs[0], [img_info['height'], img_info['width']], exp.test_size)
+
+        if len(gt_detections_tensor) > 0 :
+            online_targets = tracker.update(gt_detections_tensor, [img_info['height'], img_info['width']], exp.test_size)
+
             online_tlwhs = []
             online_ids = []
             online_scores = []
@@ -215,7 +263,7 @@ def image_demo(predictor, vis_folder, current_time, args):
         # result_image = predictor.visual(outputs[0], img_info, predictor.confthre)
         if args.save_result:
             timestamp = time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
-            save_folder = osp.join(vis_folder, timestamp)
+            save_folder = osp.join(vis_folder, f'{seq_name}_{timestamp}')
             os.makedirs(save_folder, exist_ok=True)
             cv2.imwrite(osp.join(save_folder, osp.basename(img_path)), online_im)
 
@@ -227,11 +275,15 @@ def image_demo(predictor, vis_folder, current_time, args):
             break
 
     if args.save_result:
-        res_file = osp.join(vis_folder, f"{timestamp}.txt")
+        res_file = osp.join(vis_folder, f"{timestamp}.{seq_name}.txt")
         with open(res_file, 'w') as f:
             f.writelines(results)
         logger.info(f"save results to {res_file}")
 
+        res_file = osp.join(vis_folder, f"{seq_name}.txt")
+        with open(res_file, 'w') as f:
+            f.writelines(results)
+        logger.info(f"save results to {res_file}")
 
 def imageflow_demo(predictor, vis_folder, current_time, args):
     cap = cv2.VideoCapture(args.path if args.demo == "video" else args.camid)
